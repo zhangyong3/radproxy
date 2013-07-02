@@ -9,7 +9,7 @@
 #define KW_LISTEN 1
 #define KW_CLIENT 2
 
-static void free_server(struct radproxy_back_server *s)
+static void free_server(struct radproxy_backend_server *s)
 {
 	if (s) {
 		if (s->name)
@@ -20,10 +20,10 @@ static void free_server(struct radproxy_back_server *s)
 	}
 }
 
-static struct radproxy_back_server *parse_server(int linenum, char *args[], int argc)
+static struct radproxy_backend_server *parse_server(int linenum, char *args[], int argc)
 {
 	int j = 0;
-	struct radproxy_back_server *s;
+	struct radproxy_backend_server *s;
 	char *p;
 	const char *errmsg;
 	if (argc < 2) {
@@ -238,7 +238,7 @@ static void free_proxy(struct radproxy_desc *p)
 	int i = 0;
 	if (p) {
 		for (i = 0;i < p->server_cnt; ++i) {
-			struct radproxy_back_server *s = p->servers[i];
+			struct radproxy_backend_server *s = p->servers[i];
 			if (!s) continue;
 
 			free_server(s);
@@ -381,9 +381,9 @@ static int parse(struct radproxy_data *cfg, int linenum, char *args[], int argc)
 					goto error;
 				}
 			} else if (strcasecmp(args[0], "server") == 0) {
-				struct radproxy_back_server *s = parse_server(linenum, args+1, argc-1);
+				struct radproxy_backend_server *s = parse_server(linenum, args+1, argc-1);
 				if (s) {
-					struct radproxy_back_server **q = realloc(p->servers, (p->server_cnt+1)*sizeof(struct radproxy_back_server*));
+					struct radproxy_backend_server **q = realloc(p->servers, (p->server_cnt+1)*sizeof(struct radproxy_back_server*));
 					if (q) {
 						q[p->server_cnt] = s;
 						p->servers = q;
