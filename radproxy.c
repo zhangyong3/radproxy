@@ -44,58 +44,42 @@ static void radproxy_clear_sm(struct radproxy_sm *sm)
 
 	sm->failover = 0;
 	sm->from = NULL;
+	sm->serv = NULL;
+	memset(&sm->node, 0, sizeof(sm->node));
+	memset(&sm->active_node, 0, sizeof(sm->active_node));
+	memset(&sm->free_node, 0, sizeof(sm->free_node));
 }
 
 static void radproxy_destroy_sm(struct radproxy_desc *proxy, struct radproxy_sm *sm)
 {
-	radproxy_clear_sm(sm);
-	proxy->sms[sm->index] = NULL;
+	log_debug("[%d] destroyed\n", sm->id);
+	if (sm->serv) {
+		dlist_remove(&sm->serv->sm_list, &sm->active_node);
+	}
 
-	sm->next = proxy->freesms;
-	proxy->freesms = sm;
+	dlist_remove(&proxy->sms, &sm->node);
+	radproxy_clear_sm(sm);
+
+	dlist_append(&proxy->freesms, &sm->free_node);
 }
 
 static struct radproxy_sm* radproxy_new_sm(struct radproxy_desc *proxy)
 {
-	struct radproxy_sm *sm;
-	int i = 0;
-	int inserted = 0;
+	struct radproxy_sm *sm = NULL;
+	dlist_node_t *node = dlist_remove_head(&proxy->freesms);
 
-	if (proxy->freesms) {
-		sm = proxy->freesms;
-		proxy->freesms = proxy->freesms->next;
+	if (node != NULL)
+		sm = dlist_get_struct_ptr(struct radproxy_sm, free_node, node);
+
+	if (sm) {
 		radproxy_clear_sm(sm);
 	} else {
 		sm = calloc(1, sizeof(*sm));
-	}
-
-	if (!sm)
-		return NULL;
-
-	for (i = 0; proxy->sms && i < proxy->size_sm; ++i) {
-		if (proxy->sms[i] == NULL) {
-			sm->index = i;
-			proxy->sms[i] = sm;
-			inserted = 1;
-			break;
-		}
-	}
-
-	if (!inserted) {
-		struct radproxy_sm **newsms;
-		newsms = realloc(proxy->sms, (proxy->size_sm+16)*sizeof(*proxy->sms));
-		if (!newsms) {
-			perror("realloc");
+		if (!sm)
 			return NULL;
-		}
-
-		proxy->sms = newsms;
-		proxy->sms[proxy->size_sm] = sm;
-		sm->index = proxy->size_sm;
-		memset(proxy->sms+proxy->size_sm+1, 0, sizeof(struct radproxy_sm *)*15);
-		proxy->size_sm+=16;
 	}
 
+	dlist_append(&proxy->sms, &sm->node);
 	sm->id = proxy->sm_id++;
 
 	return sm;
@@ -167,6 +151,10 @@ static int radproxy_init_server(struct radproxy_data *data)
 
 	for (p = data->proxys; p ; p=p->next) {
 		char port_buf[16];
+
+		dlist_init(&p->sms);
+		dlist_init(&p->freesms);
+
 		memset(&hints, 0, sizeof(hints));
 		hints.ai_flags = AI_PASSIVE;
 		hints.ai_family = AF_UNSPEC;
@@ -233,6 +221,12 @@ static int radproxy_init_server(struct radproxy_data *data)
 
 		p->clients = data->clients;
 		number_of_listener += p->listen_size;
+
+		for (i = 0; i < p->server_cnt; ++i) {
+			struct radproxy_backend_server *sv = p->servers[i];
+			if (!sv) continue;
+			dlist_init(&sv->sm_list);
+		}
 	}
 
 	if (number_of_listener <= 0) {
@@ -258,23 +252,23 @@ static void radproxy_close_proxy(struct radproxy_desc *p)
 }
 
 
-static void radproxy_process_new_req(struct radproxy_desc *p, struct radproxy_sm *sm)
+static struct radproxy_sm *radproxy_process_new_req(
+		struct radproxy_desc *p, struct radproxy_sm *sm)
 {
 	char buf[4096];
 	struct radproxy_addr addr;
 	int fd = sm->from->fd;
 	int len = radproxy_recvfrom(fd, buf, sizeof(buf), &addr);
 	if (len <= 0)
-		return;
+		return NULL;
 
 	struct radproxy_sm *new_sm = radproxy_new_sm(p);
 	if (new_sm) {
 		char ipbuf[64];
-		//new_sm->p = p; // p->listens[index].p;
 		new_sm->req = malloc(len);
 		if (!new_sm->req) {
 			radproxy_destroy_sm(p, new_sm);
-			return;
+			return NULL;;
 		}
 
 		memcpy(new_sm->req, buf, len);
@@ -282,12 +276,15 @@ static void radproxy_process_new_req(struct radproxy_desc *p, struct radproxy_sm
 		memcpy(&new_sm->local_addr, &sm->from->addr, sizeof(new_sm->local_addr));
 		memcpy(&new_sm->from_addr, &addr, sizeof(addr));
 		gettimeofday(&new_sm->tv, NULL);
-		new_sm->state = process_local;
 		new_sm->from = sm->from;
+		new_sm->state = remote_write;
 
 		log_debug("[%d] new packet from %s\n", new_sm->id,
 			radproxy_ipaddr_str(&addr, ipbuf, sizeof(ipbuf)));
+		return new_sm;
 	}
+
+	return NULL;
 }
 
 static void radproxy_process_failover(time_t now, struct radproxy_desc *p)
@@ -299,7 +296,7 @@ static void radproxy_process_failover(time_t now, struct radproxy_desc *p)
 	for (;i < p->server_cnt; ++i) {
 		int create_ok = 0;
 		struct radproxy_sm *sm;
-		struct radproxy_back_server *s = p->servers[i];
+		struct radproxy_backend_server *s = p->servers[i];
 
 		if (s->is_checking)
 			return;
@@ -321,7 +318,6 @@ static void radproxy_process_failover(time_t now, struct radproxy_desc *p)
 
 				gettimeofday(&sm->tv, NULL);
 				memcpy(&sm->dest_addr, &s->addr, sizeof(s->addr));
-				sm->timeout = p->timeout;
 				sm->maxtry = p->maxtry;
 				sm->failover = 1;
 				sm->state = remote_write;
@@ -330,6 +326,7 @@ static void radproxy_process_failover(time_t now, struct radproxy_desc *p)
 				create_ok = 1;
 				s->is_checking = 1;
 
+				dlist_append(&s->sm_list, &sm->active_node);
 				ee.events = EPOLLOUT;
 				ee.data.ptr = sm;
 				epoll_ctl(p->epfd, EPOLL_CTL_ADD, fd, &ee);
@@ -342,7 +339,7 @@ static void radproxy_process_failover(time_t now, struct radproxy_desc *p)
 	}
 }
 
-static struct radius_state_node *create_radius_state_node(const void *state, int len, struct radproxy_back_server *srv)
+static struct radius_state_node *create_radius_state_node(const void *state, int len, struct radproxy_backend_server *srv)
 {
 	struct radius_state_node *p;
 	p = malloc(sizeof(*p));
@@ -387,7 +384,7 @@ static int radproxy_remove_timeout_state(void *ctx, void *data)
 	return 0;
 }
 
-struct radproxy_back_server *radproxy_apply_start(
+struct radproxy_backend_server *radproxy_apply_start(
 		struct radproxy_desc *p, struct radproxy_sm *sm)
 {
 	if (p->mode == mode_radius) {
@@ -420,7 +417,7 @@ struct radproxy_back_server *radproxy_apply_start(
 			/*check if packet has State, forward it by check hashtable*/
 			state_data = radius_get_attrib_val(ctx, 24, -1, -1, &state_len);
 			if (state_data != NULL) {
-				struct radproxy_back_server *s = NULL;
+				struct radproxy_backend_server *s = NULL;
 				struct radius_state_node *n = create_radius_state_node(state_data, state_len, NULL);
 
 				if (n) {
@@ -446,7 +443,7 @@ struct radproxy_back_server *radproxy_apply_start(
 			is_eap_packet = radius_iseap(ctx);
 
 			if (p->option & OPTION_ROUND_ROBIN) {
-				struct radproxy_back_server *s = NULL;
+				struct radproxy_backend_server *s = NULL;
 				int i = 0, j = 0;
 				int prev = p->cur;
 				for (i =0; i<p->server_cnt; ++i) {
@@ -483,7 +480,7 @@ struct radproxy_back_server *radproxy_apply_start(
 			}
 		} else {
 			/*ok, this is easy, never worry about state*/
-			struct radproxy_back_server *s = NULL;
+			struct radproxy_backend_server *s = NULL;
 			int i = 0, j = p->cur;
 			for (i =0; i<p->server_cnt; ++i) {
 				j = (j+1) % p->server_cnt;
@@ -583,6 +580,55 @@ void radproxy_modify_packet(struct radproxy_sm *sm, int is_req)
 }
 
 
+static void radproxy_remove_timeout_sm(struct radproxy_desc *proxy, struct timeval *tv_now)
+{
+	int i;
+	struct epoll_event ee;
+
+	for (i = 0; i < proxy->server_cnt; ++i) {
+		struct radproxy_backend_server *sv = proxy->servers[i];
+		if (!sv) continue;
+
+		while (1) {
+			dlist_node_t *p = dlist_get_head(&sv->sm_list);
+			if (!p) break;
+
+			struct radproxy_sm *sm = dlist_get_struct_ptr(struct radproxy_sm, active_node, p);
+			if (radproxy_time_diff(tv_now, &sm->tv) < sv->timeout)
+				break;
+
+			sm->maxtry--;
+			log_debug("[%d] timeout\n", sm->id);
+			if (sm->maxtry <= 0) {
+				ee.events = EPOLLIN;
+				ee.data.ptr = sm;
+				epoll_ctl(proxy->epfd, EPOLL_CTL_DEL, sm->fd_remote, &ee);
+
+				if (sm->failover) {
+					sm->serv->status = 1;
+					sm->serv->last_check = tv_now->tv_sec;
+					sm->serv->is_checking = 0;
+					log_error("[%d] server [%s] down\n", sm->id, sm->serv->name);
+				}
+
+				radproxy_destroy_sm(proxy, sm);
+			} else {
+				log_debug("[%d] server [%s] timeout, will try again\n", sm->id, sm->serv->name);
+				sm->tv = *tv_now;
+
+				sm->state = remote_write;
+
+				ee.events = EPOLLOUT;
+				ee.data.ptr = sm;
+				epoll_ctl(proxy->epfd, EPOLL_CTL_MOD, sm->fd_remote, &ee);
+
+				dlist_remove(&sv->sm_list, &sm->active_node);
+				dlist_append(&sv->sm_list, &sm->active_node);
+			}
+		}
+	}
+}
+
 #define EVENT_SETSIZE 1024
 
 static void* radproxy_run(struct radproxy_desc *proxy)
@@ -603,6 +649,7 @@ static void* radproxy_run(struct radproxy_desc *proxy)
 		if (numret < 0) {
 			if (errno != EINTR)
 				printf("epoll_wait error=%d\n", errno);
+			radproxy_remove_timeout_sm(proxy, &tv_now);
 			continue;
 		}
 
@@ -613,18 +660,47 @@ static void* radproxy_run(struct radproxy_desc *proxy)
 			switch (sm->state) {
 			case local_listen:
 				{
-					radproxy_process_new_req(proxy, sm);
+					struct radproxy_backend_server *to;
+					struct radproxy_sm *new_sm;
+					new_sm = radproxy_process_new_req(proxy, sm);
+					if (new_sm == 0) {
+						break;
+					}
+
+					to	= radproxy_apply_start(proxy, new_sm);
+					if (!to) {
+						radproxy_destroy_sm(proxy, new_sm);
+						log_error("[%d] cannot proxy to a server", new_sm->id);
+						break;
+					}
+
+					int fd = socket(to->addr.af, SOCK_DGRAM, 0);
+					if (fd > 0) {
+						new_sm->fd_remote = fd;
+						memcpy(&new_sm->dest_addr, &to->addr, sizeof(to->addr));
+						new_sm->maxtry = to->maxtry;
+
+						dlist_append(&to->sm_list, &new_sm->active_node);
+
+						ee.events = EPOLLOUT;
+						ee.data.ptr = new_sm;
+						epoll_ctl(proxy->epfd, EPOLL_CTL_ADD, fd, &ee);
+					} else {
+						log_error("[%d] open socket error", new_sm->id);
+						radproxy_destroy_sm(proxy, new_sm);
+					}
 				}
 				break;
 			case remote_write:
 				{
 					int len;
-					log_debug("[%d] remote_write\n", sm->id);
+					char ipbuf[64];
+					radproxy_ipaddr_str(&sm->dest_addr, ipbuf, sizeof(ipbuf));
+
+					log_debug("[%d] proxy to %s\n", sm->id, ipbuf);
 					radproxy_modify_packet(sm, 1);
 					if ((len = radproxy_sendto(sm->fd_remote, sm->req, sm->req_len, &sm->dest_addr)) > 0) {
-						char ipbuf[64];
-						log_debug("[%d] sendto %s %d bytes ok\n", sm->id,
-							radproxy_ipaddr_str(&sm->dest_addr, ipbuf, sizeof(ipbuf)), len);
+						log_debug("[%d] sendto %s %d bytes ok\n", sm->id, ipbuf, len);
 
 						sm->state = remote_read;
 
@@ -633,10 +709,8 @@ static void* radproxy_run(struct radproxy_desc *proxy)
 						epoll_ctl(proxy->epfd, EPOLL_CTL_MOD, sm->fd_remote, &ee);
 						break;
 					} else {
-						char ipbuf[64];
-						log_debug("[%d] sendto %s error, len=%d\n", sm->id,
-							radproxy_ipaddr_str(&sm->dest_addr, ipbuf, sizeof(ipbuf)), len);
-						sm->state = error;
+						log_debug("[%d] sendto %s error, len=%d\n", sm->id, ipbuf, len);
+						radproxy_destroy_sm(proxy, sm);
 					}
 				}
 				break;
@@ -660,11 +734,10 @@ static void* radproxy_run(struct radproxy_desc *proxy)
 								log_info("[%d] server [%s] up\n", sm->id, sm->serv->name);
 								sm->serv->status = 0;
 								sm->serv->is_checking = 0;
-								sm->state = finish;
+								radproxy_destroy_sm(proxy, sm);
 								break;
 							}
 						}
-
 
 						sm->resp = malloc(len);
 						if (sm->resp) {
@@ -688,7 +761,6 @@ static void* radproxy_run(struct radproxy_desc *proxy)
 							break;
 						}
 					}
-					sm->state = error;
 				}
 				break;
 			default:
@@ -698,72 +770,10 @@ static void* radproxy_run(struct radproxy_desc *proxy)
 				}
 			}
 		}
+		radproxy_remove_timeout_sm(proxy, &tv_now);
 
-		for (i = 0; i < proxy->size_sm; ++i) {
-			sm = proxy->sms[i];
-			if (!sm) continue;
-			if (sm->state == error) {
-				log_debug("[%d] error\n", sm->id);
-				radproxy_destroy_sm(proxy, sm);
-			} else if (sm->state == remote_read && radproxy_time_diff(&tv_now, &sm->tv) > sm->timeout) {
-				sm->maxtry--;
-
-				log_debug("[%d] timeout\n", sm->id);
-				if (sm->maxtry <= 0) {
-					ee.events = EPOLLIN;
-					ee.data.ptr = sm;
-					epoll_ctl(proxy->epfd, EPOLL_CTL_DEL, sm->fd_remote, &ee);
-
-					if (sm->failover) {
-						sm->serv->status = 1;
-						sm->serv->last_check = tv_now.tv_sec;
-						sm->serv->is_checking = 0;
-						log_error("[%d] server [%s] down\n", sm->id, sm->serv->name);
-					}
-					radproxy_destroy_sm(proxy, sm);
-				} else {
-					log_debug("[%d] server [%s] timeout, will try again\n", sm->id, sm->serv->name);
-					//gettimeofday(&sm->tv, NULL);
-					sm->tv = tv_now;
-
-					sm->state = remote_write;
-
-					ee.events = EPOLLOUT;
-					ee.data.ptr = sm;
-					epoll_ctl(proxy->epfd, EPOLL_CTL_MOD, sm->fd_remote, &ee);
-	
-				}
-			} else if (sm->state == process_local) {
-				log_debug("[%d] process_local\n", sm->id);
-
-				struct radproxy_back_server *to;
-				to	= radproxy_apply_start(proxy, sm);
-				if (!to) {
-					sm->state = finish;
-					break;
-				}
-
-				int fd = socket(to->addr.af, SOCK_DGRAM, 0);
-				if (fd > 0) {
-					sm->fd_remote = fd;
-					memcpy(&sm->dest_addr, &to->addr, sizeof(to->addr));
-					sm->timeout = to->timeout;
-					sm->maxtry = to->maxtry;
-					sm->state = remote_write;
-
-					ee.events = EPOLLOUT;
-					ee.data.ptr = sm;
-					epoll_ctl(proxy->epfd, EPOLL_CTL_ADD, fd, &ee);
-				} else {
-					log_error("[%d] open socket error", sm->id);
-					sm->state = error;
-				}
-			} else if (sm->state == finish) {
-				log_debug("[%d] finish\n", sm->id);
-				radproxy_destroy_sm(proxy, sm);
-			}
-		}
 	}
+
 	radproxy_close_proxy(proxy);
 	return NULL;
 }

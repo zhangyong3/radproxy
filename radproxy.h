@@ -8,6 +8,7 @@
 #include <pthread.h>
 #include "common.h"
 #include "hash.h"
+#include "dlist.h"
 
 #define OPTION_ROUND_ROBIN 1
 #define OPTION_SOURCE      2
@@ -19,7 +20,7 @@
 
 typedef enum {mode_udp, mode_radius} proxy_mode_t;
 
-struct radproxy_back_server
+struct radproxy_backend_server
 {
 	char *name;
 	struct radproxy_addr addr;
@@ -31,6 +32,7 @@ struct radproxy_back_server
 	int status;
 	time_t last_check;
 	int is_checking;
+	dlist_t sm_list;
 };
 
 struct radproxy_listen_interface;
@@ -48,16 +50,15 @@ struct radproxy_desc
 
 	int server_cnt;
 	int cur;
-	struct radproxy_back_server **servers;
+	struct radproxy_backend_server **servers;
 	fr_hash_table_t *ht_state;
 
 	int interv;
 	int maxtry;
 	int timeout;
 
-	struct radproxy_sm **sms;
-	int size_sm;
-	struct radproxy_sm *freesms;
+	dlist_t sms;
+	dlist_t freesms;
 
 	unsigned int sm_id;
 
@@ -78,7 +79,7 @@ struct radius_state_node
 	void *data;
 	int datalen;
 	time_t create_tm;
-	struct radproxy_back_server *serv;
+	struct radproxy_backend_server *serv;
 };
 
 
@@ -105,18 +106,18 @@ struct radproxy_sm
 	unsigned char *resp;
 	int resp_len;
 
-	int index;
 	struct timeval tv;
-	int timeout;
 	int maxtry;
-	enum {local_listen, process_local, remote_write, remote_read, respond, timeout, finish, error} state;
+	enum {local_listen, remote_write, remote_read, respond} state;
 
 	struct radproxy_desc *p;
 	void *radius_ctx;
-	struct radproxy_back_server *serv;
+	struct radproxy_backend_server *serv;
 	int failover;
 
-	struct radproxy_sm *next;
+	dlist_node_t free_node; /*free sm list node, used by freesms*/
+	dlist_node_t active_node; /*used by radprox_backend_server sm_list*/
+	dlist_node_t node; /*all running sm list node, used by sms*/
 };
 
 
