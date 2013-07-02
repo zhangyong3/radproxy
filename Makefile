@@ -1,6 +1,6 @@
 CC=gcc -g -O2
 
-OBJ=cfgparse.o common.o hash.o md5.o radius.o log.o radproxy.o main.o
+OBJ=cfgparse.o common.o hash.o md5.o radius.o log.o radproxy.o main.o dlist.o
 
 radproxy: $(OBJ)
 	$(CC) -o $@ $^ -lpthread
