@@ -1,6 +1,8 @@
 #ifndef _DLIST_H_
 #define _DLIST_H_
 
+#include <stddef.h>
+
 struct dlist_node_tag {
 	struct dlist_node_tag *next;
 	struct dlist_node_tag *prev;
