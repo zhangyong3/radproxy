@@ -160,6 +160,7 @@ static int radproxy_init_server(struct radproxy_data *data)
 	//char hostname[64];
 	int flags = 1;
 	struct radproxy_desc *p;
+	int number_of_listener = 0;
 
 	//if (0 != gethostname(hostname, sizeof(hostname)))
 	//	return -4;
@@ -230,11 +231,15 @@ static int radproxy_init_server(struct radproxy_data *data)
 		}
 		freeaddrinfo(res);
 
-		if (p->listen_size <= 0) {
-			fprintf(stderr, "no listen socket created\n");
-			return -4;
-		}	
+		p->clients = data->clients;
+		number_of_listener += p->listen_size;
 	}
+
+	if (number_of_listener <= 0) {
+		fprintf(stderr, "no listen socket created\n");
+		return -4;
+	}
+
 	return 0;
 }
 
@@ -778,7 +783,6 @@ void radproxy_start(struct radproxy_data *data, int branch)
 
 	struct radproxy_desc *p = data->proxys;
 	while (p) {
-		p->clients = data->clients;
 		pthread_create(&p->thr, NULL, (void*(*)(void*))radproxy_run, p);
 		p = p->next;
 	}
