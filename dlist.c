@@ -20,8 +20,20 @@ void dlist_append(dlist_t *list, dlist_node_t *node)
 	list->size+=1;
 }
 
+void dlist_prepend(dlist_t *list, dlist_node_t *node)
+{
+	dlist_node_t *p = &list->dummy;
 
-int dlist_delete(dlist_t *list, dlist_node_t *node)
+	node->next = p->next;
+	node->prev = p;
+	
+	p->next->prev = node;
+	p->next = node;
+	list->size+=1;
+}
+
+
+int dlist_remove(dlist_t *list, dlist_node_t *node)
 {
 	dlist_node_t *p = &list->dummy;
 	if (node == p)
@@ -116,8 +128,8 @@ int main()
 	dlist_foreach(&list, intvisitor);
 
 	//printf("\ndelete\n");
-	dlist_delete(&list, &p->node);
-	dlist_append(&list, &p->node);
+	dlist_remove(&list, &p->node);
+	dlist_prepend(&list, &p->node);
 	printf("size of list=%u\n", dlist_size(&list));
 	dlist_foreach(&list, intvisitor);
 

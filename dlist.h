@@ -21,7 +21,9 @@ void dlist_init(dlist_t *list);
 
 void dlist_append(dlist_t *list, dlist_node_t *node);
 
-int dlist_delete(dlist_t *list, dlist_node_t *node);
+void dlist_prepend(dlist_t *list, dlist_node_t *node);
+
+int dlist_remove(dlist_t *list, dlist_node_t *node);
 
 unsigned int dlist_size(dlist_t *list);
 
