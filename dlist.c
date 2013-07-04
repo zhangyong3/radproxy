@@ -33,16 +33,34 @@ void dlist_prepend(dlist_t *list, dlist_node_t *node)
 }
 
 
-int dlist_remove(dlist_t *list, dlist_node_t *node)
+dlist_node_t *dlist_remove(dlist_t *list, dlist_node_t *node)
 {
 	dlist_node_t *p = &list->dummy;
 	if (node == p)
-		return -1;
+		return NULL;
 
 	node->prev->next = node->next;
 	node->next->prev = node->prev;
 	list->size-=1;
-	return 0;
+	return node;
+}
+
+dlist_node_t *dlist_remove_head(dlist_t *list)
+{
+	dlist_node_t *p = &list->dummy;
+	if (p->next == p)
+		return NULL;
+
+	return dlist_remove(list, p->next);
+}
+
+dlist_node_t *dlist_remove_rear(dlist_t *list)
+{
+	dlist_node_t *p = &list->dummy;
+	if (p->next == p)
+		return NULL;
+
+	return dlist_remove(list, p->prev);
 }
 
 unsigned int dlist_size(dlist_t *list)

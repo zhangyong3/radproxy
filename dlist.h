@@ -23,7 +23,11 @@ void dlist_append(dlist_t *list, dlist_node_t *node);
 
 void dlist_prepend(dlist_t *list, dlist_node_t *node);
 
-int dlist_remove(dlist_t *list, dlist_node_t *node);
+dlist_node_t *dlist_remove(dlist_t *list, dlist_node_t *node);
+
+dlist_node_t *dlist_remove_head(dlist_t *list);
+
+dlist_node_t *dlist_remove_rear(dlist_t *list);
 
 unsigned int dlist_size(dlist_t *list);
 
