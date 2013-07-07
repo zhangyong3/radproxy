@@ -40,8 +40,7 @@ struct radproxy_desc
 {
 	char *name;
 	int epfd;
-	struct radproxy_listen_interface *listens;
-	int listen_size;
+	dlist_t listens;
 
 	int port;
 	proxy_mode_t mode;
@@ -87,6 +86,7 @@ struct radproxy_listen_interface
 {
 	int fd;
 	struct radproxy_addr addr;
+	dlist_node_t node;
 };
 
 

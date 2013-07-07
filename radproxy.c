@@ -154,6 +154,7 @@ static int radproxy_init_server(struct radproxy_data *data)
 
 		dlist_init(&p->sms);
 		dlist_init(&p->freesms);
+		dlist_init(&p->listens);
 
 		memset(&hints, 0, sizeof(hints));
 		hints.ai_flags = AI_PASSIVE;
@@ -173,6 +174,13 @@ static int radproxy_init_server(struct radproxy_data *data)
 
 		for (aip =  res; aip != NULL; aip = aip->ai_next) {
 			struct radproxy_sm *sm;
+			char ipbuf[64];
+			struct radproxy_listen_interface *lf;
+
+#ifdef NOIPV6
+			if (aip->ai_family == AF_INET6)
+				continue;
+#endif
 			int fd = socket(aip->ai_family, aip->ai_socktype, aip->ai_protocol);
 			if (fd < 0)
 				continue;
@@ -184,43 +192,37 @@ static int radproxy_init_server(struct radproxy_data *data)
 				break;
 			}
 
-			struct radproxy_listen_interface *new_listens = realloc(p->listens,
-					(p->listen_size+1)*sizeof(struct radproxy_listen_interface));
-			if (new_listens) {
-				char ipbuf[64];
-				struct radproxy_addr *addr;
-				struct radproxy_sm *sm;
+			lf = calloc(1, sizeof(*lf));
+			if (!lf) {
+				close(fd);
+				break;
+			}
 
-				p->listens = new_listens;
-				p->listens[p->listen_size].fd = fd;
-				//p->listens[p->listen_size].p = p;
-				//p->listens[p->listen_size].q = radproxy_create_queue(1024);
-				radproxy_sockaddr2ipaddr((const struct  sockaddr_storage *)aip->ai_addr, 
-						&p->listens[p->listen_size].addr);
+			lf->fd = fd;
+			radproxy_sockaddr2ipaddr((const struct  sockaddr_storage *)aip->ai_addr, &lf->addr);
 
-				addr = &new_listens[p->listen_size].addr;
-				radproxy_ipaddr_str(addr, ipbuf, sizeof(ipbuf));
+			radproxy_ipaddr_str(&lf->addr, ipbuf, sizeof(ipbuf));
+			log_info("radproxy is serving at %s, fd=%d\n", ipbuf, fd);
 
-				log_info("radproxy ready to recv packet at %s\n", ipbuf);
+			sm = radproxy_new_sm(p);
+			if (sm) {
+				struct epoll_event ee;
+				sm->state = local_listen;
+				sm->from = lf;
+				ee.events = EPOLLIN;
+				ee.data.ptr = sm;
+				epoll_ctl(p->epfd, EPOLL_CTL_ADD, fd, &ee);
 
-				sm = radproxy_new_sm(p);
-				if (sm) {
-					struct epoll_event ee;
-					sm->state = local_listen;
-					sm->from = &new_listens[p->listen_size];
-					ee.events = EPOLLIN;
-					ee.data.ptr = sm;
-					epoll_ctl(p->epfd, EPOLL_CTL_ADD, fd, &ee);
-				}
-				p->listen_size += 1;
+				dlist_append(&p->listens, &lf->node);
 			} else {
+				free(lf);
 				close(fd);
 			}
 		}
 		freeaddrinfo(res);
 
 		p->clients = data->clients;
-		number_of_listener += p->listen_size;
+		number_of_listener += dlist_size(&p->listens);
 
 		for (i = 0; i < p->server_cnt; ++i) {
 			struct radproxy_backend_server *sv = p->servers[i];
@@ -239,16 +241,12 @@ static int radproxy_init_server(struct radproxy_data *data)
 
 static void radproxy_close_proxy(struct radproxy_desc *p)
 {
-	int i = 0;
-	for (i = 0; i < p->listen_size; ++i) {
-		if (p->listens[i].fd > 0)
-			close(p->listens[i].fd);
-		p->listens[i].fd = -1;
+	dlist_node_t *n = NULL;
+	while ((n = dlist_remove_head(&p->listens)) != NULL) {
+		struct radproxy_listen_interface *lf;
+		lf = dlist_get_struct_ptr(struct radproxy_listen_interface, node, n);
+		close(lf->fd);
 	}
-	if (p->listens);
-		free(p->listens);
-	p->listens = NULL;
-	p->listen_size = 0;
 }
 
 
