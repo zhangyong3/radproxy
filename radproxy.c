@@ -226,8 +226,9 @@ static int radproxy_init_server(struct radproxy_data *data)
 
 		for (i = 0; i < p->server_cnt; ++i) {
 			struct radproxy_backend_server *sv = p->servers[i];
-			if (!sv) continue;
-			dlist_init(&sv->sm_list);
+			if (sv != NULL) {
+				dlist_init(&sv->sm_list);
+			}
 		}
 	}
 
@@ -291,7 +292,7 @@ static void radproxy_process_failover(time_t now, struct radproxy_desc *p)
 	if (!(p->option & OPTION_FAILOVER))
 		return;
 
-	for (;i < p->server_cnt; ++i) {
+	for (i = 0; i < p->server_cnt; ++i) {
 		int create_ok = 0;
 		struct radproxy_sm *sm;
 		struct radproxy_backend_server *s = p->servers[i];
