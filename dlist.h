@@ -54,6 +54,6 @@ dlist_node_t *dlist_get_rear(dlist_t *list);
 				offsetof(struct_type_name, field_name)));
 
 				
-#define dlist_end_foreach }}
+#define dlist_end_foreach() }}
 
 #endif
