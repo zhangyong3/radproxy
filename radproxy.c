@@ -592,7 +592,14 @@ static void radproxy_remove_timeout_sm(struct radproxy_desc *proxy, struct timev
 			if (!p) break;
 
 			struct radproxy_sm *sm = dlist_get_struct_ptr(struct radproxy_sm, active_node, p);
-			if (radproxy_time_diff(tv_now, &sm->tv) < sv->timeout)
+			int deta = radproxy_time_diff(tv_now, &sm->tv);
+			int timeout = sv->timeout;
+
+			if (sm->failover) {
+				timeout = proxy->timeout;
+			}
+
+			if (deta < sv->timeout)
 				break;
 
 			sm->maxtry--;
@@ -668,7 +675,7 @@ static void* radproxy_run(struct radproxy_desc *proxy)
 					to	= radproxy_apply_start(proxy, new_sm);
 					if (!to) {
 						radproxy_destroy_sm(proxy, new_sm);
-						log_error("[%d] cannot proxy to a server", new_sm->id);
+						log_error("[%d] cannot proxy to a server\n", new_sm->id);
 						break;
 					}
 
@@ -697,7 +704,8 @@ static void* radproxy_run(struct radproxy_desc *proxy)
 
 					log_debug("[%d] proxy to %s\n", sm->id, ipbuf);
 					radproxy_modify_packet(sm, 1);
-					if ((len = radproxy_sendto(sm->fd_remote, sm->req, sm->req_len, &sm->dest_addr)) > 0) {
+					len = radproxy_sendto(sm->fd_remote, sm->req, sm->req_len, &sm->dest_addr);
+					if (len > 0) {
 						log_debug("[%d] sendto %s %d bytes ok\n", sm->id, ipbuf, len);
 
 						sm->state = remote_read;
@@ -707,7 +715,7 @@ static void* radproxy_run(struct radproxy_desc *proxy)
 						epoll_ctl(proxy->epfd, EPOLL_CTL_MOD, sm->fd_remote, &ee);
 						break;
 					} else {
-						log_debug("[%d] sendto %s error, len=%d\n", sm->id, ipbuf, len);
+						log_error("[%d] sendto %s error, len=%d: %s\n", sm->id, ipbuf, len, strerror(errno));
 						radproxy_destroy_sm(proxy, sm);
 					}
 				}
@@ -739,19 +747,21 @@ static void* radproxy_run(struct radproxy_desc *proxy)
 
 						sm->resp = malloc(len);
 						if (sm->resp) {
+							char ipbuf[64];
+							radproxy_ipaddr_str(&sm->from_addr, ipbuf, sizeof(ipbuf));
+
 							memcpy(sm->resp, buf, len);
 							sm->resp_len = len;
-
 
 							log_debug("[%d] repond\n", sm->id);
 							radproxy_modify_packet(sm, 0);
 							int len = radproxy_sendto(sm->from->fd, sm->resp, sm->resp_len, &sm->from_addr);
 							if (len > 0) {
-								char ipbuf[64];
-								log_debug("[%d] respond to %s %d bytes ok\n", sm->id,
-									radproxy_ipaddr_str(&sm->from_addr, ipbuf, sizeof(ipbuf)), len);
+								log_debug("[%d] respond to %s %d bytes ok\n", sm->id, ipbuf , len);
 								radproxy_apply_finish(proxy, sm);
 								radproxy_destroy_sm(proxy, sm);
+							} else {
+								log_error("[%d] respond to %s error, len=%d: %s\n", sm->id, ipbuf, len, strerror(errno));
 							}
 							ee.events = EPOLLIN|EPOLLOUT;
 							ee.data.ptr = sm;
