@@ -166,7 +166,7 @@ int main()
 	{
 		printf(" %d", p_node->val);
 	}
-	dlist_end_foreach;
+	dlist_end_foreach();
 	
 	printf("\n");
 
