@@ -4,7 +4,6 @@
 #include <stdlib.h>
 #include "cfgparse.h"
 #include "radproxy.h"
-#include "dlist.h"
 
 #define MAX_ARGS 64
 #define KW_LISTEN 1
@@ -311,7 +310,6 @@ static int parse(struct radproxy_data *cfg, int linenum, char *args[], int argc)
 				if (!p)
 					goto error;
 
-				dlist_init(&p->server_list);
 				p->port = atoi(args[1]);
 				if (p->port <= 0) {
 					errmsg = "invalid port number";
@@ -397,15 +395,12 @@ static int parse(struct radproxy_data *cfg, int linenum, char *args[], int argc)
 			} else if (strcasecmp(args[0], "server") == 0) {
 				struct radproxy_backend_server *s = parse_server(linenum, args+1, argc-1);
 				if (s) {
-					dlist_append(&p->server_list, &s->node);
-					/*
 					struct radproxy_backend_server **q = realloc(p->servers, (p->server_cnt+1)*sizeof(struct radproxy_back_server*));
 					if (q) {
 						q[p->server_cnt] = s;
 						p->servers = q;
 						p->server_cnt += 1;
 					}
-					*/
 				} else {
 					goto error;
 				}
@@ -529,7 +524,7 @@ int radproxy_check(struct radproxy_data *data)
 				return 1;
 			}
 
-			if (dlist_size(&p->server_list) <= 0) {
+			if (p->server_cnt <= 0) {
 				printf("at least one server should be specified in %s\n", p->name);
 				return 2;
 			}
