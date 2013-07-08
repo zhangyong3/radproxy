@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include "cfgparse.h"
 #include "radproxy.h"
+#include "dlist.h"
 
 #define MAX_ARGS 64
 #define KW_LISTEN 1
@@ -74,10 +75,15 @@ static struct radproxy_backend_server *parse_server(int linenum, char *args[], i
 
 		if (strcasecmp(args[j], "weight") == 0) {
 			s->weight = atoi(args[j+1]);
+			if (s->weight < 0) {
+				errmsg = "weight cannot be negative";
+				goto error;
+			}
 		} else if (strcasecmp(args[j], "timeout") == 0) {
 			s->timeout = atoi(args[j+1]);
 		} else if (strcasecmp(args[j], "try") == 0) {
 			s->maxtry = atoi(args[j+1]);
+				errmsg = "'try' must be positive";
 		} else if (strcasecmp(args[j], "secret") == 0) {
 			s->secret = strdup(args[j+1]);
 		} else {
@@ -90,10 +96,17 @@ static struct radproxy_backend_server *parse_server(int linenum, char *args[], i
 
 	if (s->timeout <=0) {
 		s->timeout = 3000;
+		printf("'timeout' is not positive, reset to 3000\n");
 	}
 
 	if (s->maxtry <= 0) {
 		s->maxtry = 2;
+		printf("'try' is not positive, reset to 2\n");
+	}
+
+	if (s->weight <= 0) {
+		s->weight = 1;
+		printf("'weight' is not positive, reset to 1\n");
 	}
 
 	if (s->addr.port <= 0) {
@@ -298,6 +311,7 @@ static int parse(struct radproxy_data *cfg, int linenum, char *args[], int argc)
 				if (!p)
 					goto error;
 
+				dlist_init(&p->server_list);
 				p->port = atoi(args[1]);
 				if (p->port <= 0) {
 					errmsg = "invalid port number";
@@ -383,12 +397,15 @@ static int parse(struct radproxy_data *cfg, int linenum, char *args[], int argc)
 			} else if (strcasecmp(args[0], "server") == 0) {
 				struct radproxy_backend_server *s = parse_server(linenum, args+1, argc-1);
 				if (s) {
+					dlist_append(&p->server_list, &s->node);
+					/*
 					struct radproxy_backend_server **q = realloc(p->servers, (p->server_cnt+1)*sizeof(struct radproxy_back_server*));
 					if (q) {
 						q[p->server_cnt] = s;
 						p->servers = q;
 						p->server_cnt += 1;
 					}
+					*/
 				} else {
 					goto error;
 				}
@@ -412,29 +429,6 @@ error:
 	return 1;
 }
 
-/*
-void destroy_cfg(struct radproxy_data *cfg)
-{
-	if (cfg) {
-		struct radproxy_client *c = cfg->clients;
-		struct radproxy_desc *p = cfg->proxys;
-
-		while (c) {
-			struct radproxy_client *q =c;
-			c = c->next;
-			free_client(q);
-		}
-
-		while (p) {
-			struct radproxy_desc *q =p;
-			p = p->next;
-			free_proxy(q);
-		}
-
-		free(cfg);
-	}
-}
-*/
 
 struct radproxy_data *radproxy_init(const char *file)
 {
@@ -481,9 +475,12 @@ struct radproxy_data *radproxy_init(const char *file)
 		}
 
 		if (parse(data, linenum, args, i) != 0) {
-			break;
+			goto error;
 		}
 	}
+
+	if (radproxy_check(data) != 0)
+		goto error;
 
 	fclose(fp);
 	return data;
@@ -522,3 +519,36 @@ void radproxy_destroy(struct radproxy_data *data)
 
 }
 
+int radproxy_check(struct radproxy_data *data)
+{
+	if (data) {
+		struct radproxy_desc *p = data->proxys;
+		while (p) {
+			if (!p->name) {
+				printf("proxy name required for port %d\n", p->port);
+				return 1;
+			}
+
+			if (dlist_size(&p->server_list) <= 0) {
+				printf("at least one server should be specified in %s\n", p->name);
+				return 2;
+			}
+
+			if (p->option & OPTION_ROUND_ROBIN &&
+					p->option & OPTION_SOURCE) {
+				printf("round robin and source cannot be combined in %s\n", p->name);
+				return 3;
+			}
+
+			if (!(p->option & OPTION_ROUND_ROBIN) &&
+					!(p->option & OPTION_SOURCE)) {
+				p->option |= OPTION_ROUND_ROBIN;
+				//printf("use round robin\n");
+			}
+
+			p = p->next;
+		}
+
+	}
+	return 0;
+}
